@@ -5,6 +5,7 @@ import { BarChart3 } from "lucide-react";
 import { EvaluationDashboard } from "@/components/Dashboard/EvaluationDashboard";
 import { SecurityDashboard } from "@/components/Dashboard/SecurityDashboard";
 import { useDashboardMetrics } from "@/components/Dashboard/use-dashboard-metrics";
+import { EnhancementPanel } from "@/components/workspace/enhancements/enhancement-panel";
 import { useAgentExecutionStore } from "@/lib/stores/agent-execution-store";
 
 export function BottomPanel() {
@@ -41,6 +42,9 @@ export function BottomPanel() {
         metrics={security ?? data?.security ?? null}
         status={dashboardStatus}
       />
+      <div className="xl:col-span-2">
+        <EnhancementPanel />
+      </div>
     </section>
   );
 }
