@@ -23,6 +23,7 @@
 # local Codex artifacts
 /work
 /outputs
+/.tools
 
 # misc
 .DS_Store

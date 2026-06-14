@@ -9,8 +9,16 @@ import { useAgentExecutionStore } from "@/lib/stores/agent-execution-store";
 
 export function BottomPanel() {
   const activeAgent = useAgentExecutionStore((state) => state.activeAgent);
+  const evaluation = useAgentExecutionStore((state) => state.evaluation);
+  const isRunning = useAgentExecutionStore((state) => state.isRunning);
+  const security = useAgentExecutionStore((state) => state.security);
   const profile = activeAgent?.status === "error" ? "high-risk" : "standard";
   const { data, error, status } = useDashboardMetrics(profile);
+  const dashboardStatus = isRunning
+    ? "loading"
+    : evaluation && security
+      ? "ready"
+      : status;
 
   return (
     <section
@@ -25,13 +33,13 @@ export function BottomPanel() {
       </div>
       <EvaluationDashboard
         error={error}
-        metrics={data?.evaluation ?? null}
-        status={status}
+        metrics={evaluation ?? data?.evaluation ?? null}
+        status={dashboardStatus}
       />
       <SecurityDashboard
         error={error}
-        metrics={data?.security ?? null}
-        status={status}
+        metrics={security ?? data?.security ?? null}
+        status={dashboardStatus}
       />
     </section>
   );

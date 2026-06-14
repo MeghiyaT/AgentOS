@@ -14,6 +14,7 @@ import type { AgentName, AgentStatus } from "@/lib/types/agent-contracts";
 
 interface AgentGraphProps {
   agentGraph: Record<string, AgentStatus>;
+  onSelectAgent: (agentName: AgentName) => void;
 }
 
 const positions: Record<AgentName, { x: number; y: number }> = {
@@ -54,7 +55,7 @@ const statusClasses: Record<AgentStatus, string> = {
   error: "border-red-300 bg-red-950 text-red-100",
 };
 
-export function AgentGraph({ agentGraph }: AgentGraphProps) {
+export function AgentGraph({ agentGraph, onSelectAgent }: AgentGraphProps) {
   const nodes: Node[] = AGENT_NAMES.map((agentName) => {
     const status = agentGraph[agentName] ?? "idle";
 
@@ -73,7 +74,7 @@ export function AgentGraph({ agentGraph }: AgentGraphProps) {
       },
       type: "default",
       draggable: false,
-      selectable: false,
+      selectable: true,
     };
   });
 
@@ -86,8 +87,9 @@ export function AgentGraph({ agentGraph }: AgentGraphProps) {
         fitViewOptions={{ padding: 0.18 }}
         nodesDraggable={false}
         nodesConnectable={false}
-        elementsSelectable={false}
+        elementsSelectable
         colorMode="dark"
+        onNodeClick={(_, node) => onSelectAgent(node.id as AgentName)}
       >
         <Background color="#334155" gap={18} />
         <Controls showInteractive={false} />

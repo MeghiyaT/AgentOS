@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export const AGENT_NAMES = [
   "Context Doctor",
   "Planner",
@@ -18,6 +20,22 @@ export interface XAIAnswer {
   evidence: string[];
   confidence: number;
 }
+
+export const xaiAnswerSchema = z.object({
+  decision: z.string().min(1),
+  reason: z.string().min(1),
+  evidence: z.array(z.string().min(1)),
+  confidence: z.number().min(0).max(1),
+});
+
+export const agentStatusSchema = z.enum(["idle", "running", "complete", "error"]);
+export const agentNameSchema = z.enum(AGENT_NAMES);
+export const agentOutputSchema = z.object({
+  agentName: agentNameSchema,
+  status: agentStatusSchema,
+  xai: xaiAnswerSchema,
+  result: z.record(z.string(), z.unknown()),
+});
 
 export interface AgentOutput {
   agentName: AgentName;
@@ -68,6 +86,28 @@ export interface EvaluatorResult {
   recommendation: string;
 }
 
+export interface RunEvaluationMetrics {
+  totalCostUsd: number;
+  totalLatencySeconds: number;
+  accuracy: number;
+  reliability: number;
+  confidence: number;
+}
+
+export interface RunSecurityFinding {
+  id: string;
+  title: string;
+  severity: "low" | "medium" | "high" | "critical";
+  source: string;
+  detail: string;
+}
+
+export interface RunSecurityMetrics {
+  riskScore: number;
+  vulnerabilitiesFound: number;
+  findings: RunSecurityFinding[];
+}
+
 export type ContextDoctorOutput = AgentOutput & {
   agentName: "Context Doctor";
   result: ContextDoctorResult;
@@ -111,3 +151,51 @@ export type AgentRunOutput =
   | TestingOutput
   | SecurityOutput
   | EvaluatorOutput;
+
+export interface AgentRunRequest {
+  githubUrl: string;
+  screenShotName: string | null;
+  problemDescription: string;
+}
+
+export interface AgentRunResponse {
+  agents: AgentRunOutput[];
+  evaluation: RunEvaluationMetrics;
+  security: RunSecurityMetrics;
+  status: "success" | "error";
+  generatedAt: string;
+  totalCostUsd: number;
+  totalLatencyMs: number;
+}
+
+export const runEvaluationMetricsSchema = z.object({
+  totalCostUsd: z.number().nonnegative(),
+  totalLatencySeconds: z.number().nonnegative(),
+  accuracy: z.number().min(0).max(1),
+  reliability: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+});
+
+export const runSecurityFindingSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  severity: z.enum(["low", "medium", "high", "critical"]),
+  source: z.string().min(1),
+  detail: z.string().min(1),
+});
+
+export const runSecurityMetricsSchema = z.object({
+  riskScore: z.number().min(0).max(100),
+  vulnerabilitiesFound: z.number().int().nonnegative(),
+  findings: z.array(runSecurityFindingSchema),
+});
+
+export const agentRunResponseSchema = z.object({
+  agents: z.array(agentOutputSchema).length(7),
+  evaluation: runEvaluationMetricsSchema,
+  security: runSecurityMetricsSchema,
+  status: z.enum(["success", "error"]),
+  generatedAt: z.string().min(1),
+  totalCostUsd: z.number().nonnegative(),
+  totalLatencyMs: z.number().int().nonnegative(),
+});

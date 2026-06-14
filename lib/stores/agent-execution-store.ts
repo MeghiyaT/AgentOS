@@ -1,7 +1,17 @@
 import { create } from "zustand";
 
-import { AGENT_NAMES } from "@/lib/types/agent-contracts";
-import type { AgentName, AgentOutput, AgentStatus } from "@/lib/types/agent-contracts";
+import {
+  AGENT_NAMES,
+  agentRunResponseSchema,
+} from "@/lib/types/agent-contracts";
+import type {
+  AgentName,
+  AgentOutput,
+  AgentRunResponse,
+  AgentStatus,
+  RunEvaluationMetrics,
+  RunSecurityMetrics,
+} from "@/lib/types/agent-contracts";
 
 export interface AgentRunRequest {
   githubUrl: string;
@@ -13,8 +23,12 @@ export interface AgentExecutionState {
   activeAgent: AgentOutput | null;
   agentGraph: Record<string, AgentStatus>;
   agentOutputs: Partial<Record<AgentName, AgentOutput>>;
+  evaluation: RunEvaluationMetrics | null;
+  isRunning: boolean;
   lastRunRequest: AgentRunRequest | null;
-  startRun: (request: AgentRunRequest) => void;
+  runError: string | null;
+  security: RunSecurityMetrics | null;
+  startRun: (request: AgentRunRequest) => Promise<void>;
   selectAgent: (agentName: AgentName) => void;
   resetRun: () => void;
 }
@@ -22,35 +36,6 @@ export interface AgentExecutionState {
 const idleGraph: Record<string, AgentStatus> = Object.fromEntries(
   AGENT_NAMES.map((agentName) => [agentName, "idle"])
 ) as Record<string, AgentStatus>;
-
-function createTransitionSequence(request: AgentRunRequest) {
-  const shouldSimulateError = request.problemDescription
-    .toLowerCase()
-    .includes("trigger error");
-  const securityOutcome: AgentStatus = shouldSimulateError ? "error" : "complete";
-  const evaluatorSteps: Array<{ agentName: AgentName; status: AgentStatus }> =
-    shouldSimulateError
-      ? []
-      : [
-          { agentName: "Evaluator", status: "running" },
-          { agentName: "Evaluator", status: "complete" },
-        ];
-
-  return [
-    { agentName: "Context Doctor", status: "complete" },
-    { agentName: "Planner", status: "running" },
-    { agentName: "Planner", status: "complete" },
-    { agentName: "Research", status: "running" },
-    { agentName: "Research", status: "complete" },
-    { agentName: "Coding", status: "running" },
-    { agentName: "Coding", status: "complete" },
-    { agentName: "Testing", status: "running" },
-    { agentName: "Testing", status: "complete" },
-    { agentName: "Security", status: "running" },
-    { agentName: "Security", status: securityOutcome },
-    ...evaluatorSteps,
-  ] satisfies Array<{ agentName: AgentName; status: AgentStatus }>;
-}
 
 let transitionTimers: Array<ReturnType<typeof setTimeout>> = [];
 
@@ -148,8 +133,12 @@ export const useAgentExecutionStore = create<AgentExecutionState>((set, get) => 
   activeAgent: null,
   agentGraph: { ...idleGraph },
   agentOutputs: {},
+  evaluation: null,
+  isRunning: false,
   lastRunRequest: null,
-  startRun: (request) => {
+  runError: null,
+  security: null,
+  startRun: async (request) => {
     clearTransitionTimers();
     const agentOutputs = createIdleOutputs(request);
     const contextDoctorOutput = createAgentOutput(
@@ -168,40 +157,35 @@ export const useAgentExecutionStore = create<AgentExecutionState>((set, get) => 
         ...agentOutputs,
         "Context Doctor": contextDoctorOutput,
       },
+      evaluation: null,
+      isRunning: true,
       lastRunRequest: request,
+      runError: null,
+      security: null,
     });
 
-    transitionTimers = createTransitionSequence(request).map((step, index) =>
-      setTimeout(() => {
-        const currentRequest = get().lastRunRequest;
+    try {
+      const runResponse = await requestAgentRun(request);
+      scheduleRunPlayback(runResponse);
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "AgentOS run failed.";
+      const output = createErrorOutput(request, message);
 
-        if (!currentRequest) {
-          return;
-        }
-
-        const output = createAgentOutput(
-          step.agentName,
-          step.status,
-          currentRequest
-        );
-
-        set((state) => ({
-          agentGraph: {
-            ...state.agentGraph,
-            [step.agentName]: step.status,
-          },
-          agentOutputs: {
-            ...state.agentOutputs,
-            [step.agentName]: output,
-          },
-          activeAgent:
-            state.activeAgent?.agentName === step.agentName ||
-            step.status === "running"
-              ? output
-              : state.activeAgent,
-        }));
-      }, (index + 1) * 650)
-    );
+      set((state) => ({
+        activeAgent: output,
+        agentGraph: {
+          ...state.agentGraph,
+          "Context Doctor": "error",
+        },
+        agentOutputs: {
+          ...state.agentOutputs,
+          "Context Doctor": output,
+        },
+        isRunning: false,
+        runError: message,
+      }));
+    }
   },
   selectAgent: (agentName) => {
     const state = get();
@@ -231,7 +215,103 @@ export const useAgentExecutionStore = create<AgentExecutionState>((set, get) => 
       activeAgent: null,
       agentGraph: { ...idleGraph },
       agentOutputs: {},
+      evaluation: null,
+      isRunning: false,
       lastRunRequest: null,
+      runError: null,
+      security: null,
     });
   },
 }));
+
+async function requestAgentRun(
+  request: AgentRunRequest,
+): Promise<AgentRunResponse> {
+  const response = await fetch("/api/run", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+  const payload: unknown = await response.json();
+
+  if (!response.ok) {
+    const message =
+      typeof payload === "object" &&
+      payload !== null &&
+      "error" in payload &&
+      typeof payload.error === "string"
+        ? payload.error
+        : `AgentOS API failed with ${response.status}`;
+    throw new Error(message);
+  }
+
+  return agentRunResponseSchema.parse(payload) as AgentRunResponse;
+}
+
+function scheduleRunPlayback(runResponse: AgentRunResponse) {
+  const steps = runResponse.agents.flatMap((agent) => [
+    {
+      agentName: agent.agentName,
+      status: "running" as const,
+      output: {
+        ...agent,
+        status: "running" as const,
+      },
+    },
+    {
+      agentName: agent.agentName,
+      status: agent.status,
+      output: agent,
+    },
+  ]);
+
+  transitionTimers = steps.map((step, index) =>
+    setTimeout(() => {
+      useAgentExecutionStore.setState((state) => ({
+        activeAgent:
+          state.activeAgent?.agentName === step.agentName ||
+          step.status === "running"
+            ? step.output
+            : state.activeAgent,
+        agentGraph: {
+          ...state.agentGraph,
+          [step.agentName]: step.status,
+        },
+        agentOutputs: {
+          ...state.agentOutputs,
+          [step.agentName]: step.output,
+        },
+        evaluation:
+          index === steps.length - 1 ? runResponse.evaluation : state.evaluation,
+        isRunning: index === steps.length - 1 ? false : state.isRunning,
+        runError: runResponse.status === "error" ? "AgentOS run failed." : null,
+        security:
+          index === steps.length - 1 ? runResponse.security : state.security,
+      }));
+    }, (index + 1) * 280),
+  );
+}
+
+function createErrorOutput(
+  request: AgentRunRequest,
+  message: string,
+): AgentOutput {
+  return {
+    agentName: "Context Doctor",
+    status: "error",
+    xai: {
+      decision: "Stop run after API failure",
+      reason: message,
+      evidence: [
+        `Repository: ${request.githubUrl}`,
+        `Problem length: ${request.problemDescription.length}`,
+      ],
+      confidence: 0.2,
+    },
+    result: {
+      error: message,
+    },
+  };
+}

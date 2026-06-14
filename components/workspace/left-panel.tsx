@@ -35,6 +35,8 @@ export function LeftPanel() {
   const [uploadBurst, setUploadBurst] = useState(false);
   const startRun = useAgentExecutionStore((state) => state.startRun);
   const resetRun = useAgentExecutionStore((state) => state.resetRun);
+  const isRunning = useAgentExecutionStore((state) => state.isRunning);
+  const runError = useAgentExecutionStore((state) => state.runError);
   const contextDoctor = useAgentExecutionStore(
     (state) => state.agentOutputs["Context Doctor"],
   );
@@ -58,7 +60,7 @@ export function LeftPanel() {
     }
 
     setFormError(null);
-    startRun(parsed.data);
+    void startRun(parsed.data);
   }
 
   return (
@@ -209,19 +211,20 @@ export function LeftPanel() {
           ) : null}
         </AnimatePresence>
 
-        {formError ? (
+        {formError || runError ? (
           <p className="rounded-2xl border border-red-400/30 bg-red-950/30 px-3 py-2 text-xs text-red-100">
-            {formError}
+            {formError ?? runError}
           </p>
         ) : null}
 
         <MagneticButton className="w-full">
           <Button
             type="submit"
+            disabled={isRunning}
             className="h-11 w-full rounded-2xl border border-cyan-300/20 bg-[linear-gradient(90deg,#7C3AED,#06B6D4)] text-white shadow-[0_0_32px_rgba(124,58,237,0.26)] hover:opacity-95"
           >
             <Play className="size-4" aria-hidden="true" />
-            Run AgentOS
+            {isRunning ? "Running AgentOS" : "Run AgentOS"}
             <Sparkles className="size-4" aria-hidden="true" />
           </Button>
         </MagneticButton>
