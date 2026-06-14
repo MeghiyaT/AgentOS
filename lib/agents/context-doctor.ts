@@ -251,7 +251,7 @@ function buildMockContextDoctorOutput(
   );
   const missingItems = inferMissingItems(rootPaths, metadata);
   const severity = determineSeverity(missingItems, metadata);
-  const confidence = metadata.source === "github_api" ? 0.66 : 0.48;
+  const confidence = calculateFallbackConfidence(input, metadata, missingItems);
 
   return contextDoctorAgentOutputSchema.parse({
     diagnosis:
@@ -320,6 +320,40 @@ function determineSeverity(
   }
 
   return "low";
+}
+
+function calculateFallbackConfidence(
+  input: ContextDoctorInput,
+  metadata: GitHubRepositoryMetadata,
+  missingItems: string[],
+): number {
+  const base = metadata.source === "github_api" ? 0.6 : 0.44;
+  const descriptionBonus = Math.min(0.09, input.description.trim().length / 1_500);
+  const screenshotBonus = input.screenshot ? 0.03 : 0;
+  const rootFileBonus = Math.min(0.08, metadata.rootFiles.length / 120);
+  const missingPenalty = Math.min(0.16, missingItems.length * 0.035);
+  const requestNudge =
+    (stableHash(`${input.githubUrl}|${input.description}|${missingItems.join("|")}`) %
+      7) /
+    100;
+
+  return clampConfidence(
+    base + descriptionBonus + screenshotBonus + rootFileBonus + requestNudge - missingPenalty,
+  );
+}
+
+function stableHash(value: string): number {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash;
+}
+
+function clampConfidence(value: number): number {
+  return Number(Math.min(0.82, Math.max(0.42, value)).toFixed(2));
 }
 
 function hasAny(paths: Set<string>, candidates: string[]): boolean {

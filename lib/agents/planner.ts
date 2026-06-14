@@ -163,6 +163,7 @@ function buildMockPlannerOutput(
     input.contextDoctor.missing_items.length > 0
       ? "Resolve critical context gaps"
       : "Confirm available context";
+  const confidence = calculateFallbackPlannerConfidence(input);
 
   return plannerAgentOutputSchema.parse({
     tasks: [
@@ -207,9 +208,44 @@ function buildMockPlannerOutput(
         `Missing context items: ${input.contextDoctor.missing_items.length}`,
         `Description length: ${input.description.length}`,
       ],
-      confidence: 0.58,
+      confidence,
     },
   });
+}
+
+function calculateFallbackPlannerConfidence(input: PlannerInput): number {
+  const severityPenalty: Record<PlannerInput["contextDoctor"]["severity"], number> = {
+    low: 0,
+    medium: 0.06,
+    high: 0.12,
+  };
+  const descriptionBonus = Math.min(0.08, input.description.trim().length / 1_700);
+  const missingPenalty = Math.min(0.1, input.contextDoctor.missing_items.length * 0.025);
+  const requestNudge =
+    (stableHash(`${input.description}|${input.contextDoctor.diagnosis}`) % 6) /
+    100;
+
+  return clampConfidence(
+    0.62 +
+      descriptionBonus +
+      requestNudge -
+      missingPenalty -
+      severityPenalty[input.contextDoctor.severity],
+  );
+}
+
+function stableHash(value: string): number {
+  let hash = 0;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+
+  return hash;
+}
+
+function clampConfidence(value: number): number {
+  return Number(Math.min(0.78, Math.max(0.5, value)).toFixed(2));
 }
 
 function getErrorMessage(error: unknown): string {

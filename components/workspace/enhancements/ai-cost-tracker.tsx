@@ -14,9 +14,16 @@ function formatCurrency(value: number) {
 
 export function AICostTracker() {
   const evaluation = useAgentExecutionStore((state) => state.evaluation);
+  const agentOutputs = useAgentExecutionStore((state) => state.agentOutputs);
   const totalCost = evaluation?.totalCostUsd ?? 0;
   const totalLatency = evaluation?.totalLatencySeconds ?? 0;
-  const liveAgentCost = totalCost / liveAgents.size;
+  const billableLiveAgents = AGENT_NAMES.filter((agentName) => {
+    const output = agentOutputs[agentName];
+
+    return liveAgents.has(agentName) && output && !isFallbackOutput(output.xai);
+  });
+  const liveAgentCost =
+    billableLiveAgents.length > 0 ? totalCost / billableLiveAgents.length : 0;
 
   return (
     <section className="rounded-3xl border border-white/10 bg-slate-950/55 p-4">
@@ -46,8 +53,17 @@ export function AICostTracker() {
       </div>
       <div className="mt-3 space-y-2">
         {AGENT_NAMES.map((agentName) => {
-          const cost = liveAgents.has(agentName) ? liveAgentCost : 0;
-          const label = liveAgents.has(agentName) ? "live OpenAI" : "mock";
+          const output = agentOutputs[agentName];
+          const isLiveAgent = liveAgents.has(agentName);
+          const isFallback = output ? isFallbackOutput(output.xai) : false;
+          const cost = isLiveAgent && !isFallback ? liveAgentCost : 0;
+          const label = isLiveAgent
+            ? output
+              ? isFallback
+                ? "fallback"
+                : "live OpenAI"
+              : "pending"
+            : "mock";
 
           return (
             <div
@@ -64,5 +80,11 @@ export function AICostTracker() {
         })}
       </div>
     </section>
+  );
+}
+
+function isFallbackOutput(xai: { decision: string; reason: string }) {
+  return /fallback|OPENAI_API_KEY is required/iu.test(
+    `${xai.decision} ${xai.reason}`,
   );
 }
