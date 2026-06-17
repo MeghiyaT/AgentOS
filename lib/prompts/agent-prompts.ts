@@ -21,7 +21,7 @@ export const xaiSchema = z
     evidence: z.array(z.string().min(1)).min(1),
     confidence: z.number().min(0).max(1),
   })
-  .strict();
+  ;
 
 const prioritySchema = z.enum(["low", "medium", "high", "critical"]);
 const severitySchema = z.enum(["info", "low", "medium", "high", "critical"]);
@@ -65,13 +65,13 @@ export const contextDoctorOutputSchema = z
             impact: z.string().min(1),
             priority: prioritySchema,
           })
-          .strict(),
+          ,
       )
       .min(1),
     recommendedArtifacts: z.array(z.string().min(1)),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const plannerOutputSchema = z
   .object({
@@ -87,7 +87,7 @@ export const plannerOutputSchema = z
             acceptanceCriteria: z.array(z.string().min(1)).min(1),
             estimatedComplexity: z.enum(["small", "medium", "large"]),
           })
-          .strict(),
+          ,
       )
       .min(1),
     milestones: z
@@ -98,13 +98,13 @@ export const plannerOutputSchema = z
             outcome: z.string().min(1),
             taskIds: z.array(z.string().min(1)).min(1),
           })
-          .strict(),
+          ,
       )
       .min(1),
     risks: z.array(z.string().min(1)),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const researchOutputSchema = z
   .object({
@@ -118,14 +118,14 @@ export const researchOutputSchema = z
             evidence: z.array(z.string().min(1)).min(1),
             validationStep: z.string().min(1),
           })
-          .strict(),
+          ,
       )
       .min(1),
     mostRelevantFiles: z.array(z.string().min(1)),
     unknowns: z.array(z.string().min(1)),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const codingOutputSchema = z
   .object({
@@ -138,14 +138,14 @@ export const codingOutputSchema = z
             rationale: z.string().min(1),
             proposedChanges: z.array(z.string().min(1)).min(1),
           })
-          .strict(),
+          ,
       )
       .min(1),
     implementationNotes: z.array(z.string().min(1)),
     rollbackPlan: z.string().min(1),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const testingOutputSchema = z
   .object({
@@ -159,14 +159,14 @@ export const testingOutputSchema = z
             steps: z.array(z.string().min(1)).min(1),
             expectedResult: z.string().min(1),
           })
-          .strict(),
+          ,
       )
       .min(1),
     edgeCases: z.array(z.string().min(1)),
     automationPriority: z.array(z.string().min(1)),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const securityOutputSchema = z
   .object({
@@ -180,12 +180,12 @@ export const securityOutputSchema = z
           evidence: z.array(z.string().min(1)).min(1),
           mitigation: z.string().min(1),
         })
-        .strict(),
+        ,
     ),
     securityPosture: z.enum(["acceptable", "watch", "at_risk", "blocked"]),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const evaluatorOutputSchema = z
   .object({
@@ -202,12 +202,12 @@ export const evaluatorOutputSchema = z
             status: z.enum(["pass", "warn", "fail"]),
             note: z.string().min(1),
           })
-          .strict(),
+          ,
       )
       .min(1),
     xai: xaiSchema,
   })
-  .strict();
+  ;
 
 export const agentPrompts = [
   {

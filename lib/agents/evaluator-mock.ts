@@ -19,7 +19,7 @@ export const agentOutputSchema = z
     xai: xaiSchema,
     result: agentResultMetricsSchema,
   })
-  .strict();
+  ;
 
 export const aggregateResultSchema = z
   .object({
@@ -30,7 +30,7 @@ export const aggregateResultSchema = z
     riskScore: z.number().min(0).max(10),
     confidence: z.number().min(0).max(1),
   })
-  .strict();
+  ;
 
 export type AgentOutput = z.infer<typeof agentOutputSchema>;
 export type AggregateResult = z.infer<typeof aggregateResultSchema>;

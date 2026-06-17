@@ -14,6 +14,7 @@ interface SecurityDashboardProps {
 }
 
 const severityClasses: Record<SecurityFinding["severity"], string> = {
+  info: "border-sky-400/30 bg-sky-950/50 text-sky-100",
   low: "border-emerald-400/30 bg-emerald-950/50 text-emerald-100",
   medium: "border-amber-400/30 bg-amber-950/50 text-amber-100",
   high: "border-red-400/30 bg-red-950/50 text-red-100",

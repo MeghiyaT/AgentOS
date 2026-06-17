@@ -9,15 +9,24 @@ import {
   aggregateResults,
   type AgentOutput as MetricAgentOutput,
 } from "./evaluator-mock";
-import { CODING_MOCK } from "./mocks/coding-mock";
-import { EVALUATOR_MOCK } from "./mocks/evaluator-mock";
-import { RESEARCH_MOCK } from "./mocks/research-mock";
-import { SECURITY_MOCK } from "./mocks/security-mock";
-import { TESTING_MOCK } from "./mocks/testing-mock";
 import {
   runPlanner,
   type PlannerAgentOutput,
 } from "./planner";
+import { runResearch } from "./research";
+import { runCoding } from "./coding";
+import { runTesting } from "./testing";
+import { runSecurity } from "./security";
+import { runEvaluator } from "./evaluator";
+
+import type {
+  ResearchOutput as ResearchAgentOutput,
+  CodingOutput as CodingAgentOutput,
+  TestingOutput as TestingAgentOutput,
+  SecurityOutput as SecurityAgentOutput,
+  EvaluatorOutput as EvaluatorAgentOutput,
+} from "../prompts/agent-prompts";
+
 import type {
   AgentName,
   AgentRunOutput,
@@ -27,10 +36,8 @@ import type {
   EvaluatorOutput,
   PlannerOutput,
   ResearchOutput,
-  RunSecurityFinding,
   SecurityOutput,
   TestingOutput,
-  XAIAnswer,
 } from "@/lib/types/agent-contracts";
 
 const runInputSchema = z
@@ -41,7 +48,7 @@ const runInputSchema = z
     screenshot: z.string().min(1).nullable().optional(),
     screenShotName: z.string().min(1).nullable().optional(),
   })
-  .strict()
+  
   .superRefine((input, context) => {
     if (!input.description && !input.problemDescription) {
       context.addIssue({
@@ -80,15 +87,51 @@ export async function runAgentOSInspection(
     },
     { allowMockFallback: true },
   );
-  const security = createSecurityMetrics(input, contextDoctor);
-  const agents = createAgentOutputs(input, contextDoctor, planner, security);
+
+  const agentInputs = { githubUrl: input.githubUrl, description: input.description };
+
+  const [research, coding, testing, securityModel, evaluator] = await Promise.all([
+    runResearch(agentInputs, { allowMockFallback: true }),
+    runCoding(agentInputs, { allowMockFallback: true }),
+    runTesting(agentInputs, { allowMockFallback: true }),
+    runSecurity(agentInputs, { allowMockFallback: true }),
+    runEvaluator(agentInputs, { allowMockFallback: true }),
+  ]);
+
+  const security: AgentRunResponse["security"] = {
+    riskScore: securityModel.riskScore,
+    vulnerabilitiesFound: securityModel.findings.length,
+    findings: securityModel.findings.map((finding, index) => ({
+      id: `sec-${String(index + 1).padStart(3, "0")}`,
+      title: finding.title,
+      severity: finding.severity,
+      source: "Security agent",
+      detail: finding.mitigation,
+    })),
+  };
+
+  const agents = createAgentOutputs(
+    contextDoctor,
+    planner,
+    research,
+    coding,
+    testing,
+    securityModel,
+    evaluator,
+    contextDoctor
+  );
+  
   const totalLatencyMs = Date.now() - startedAt;
   const metricAgents = createMetricAgentOutputs(
     agents,
     totalLatencyMs,
     contextDoctor,
     planner,
-    security,
+    research,
+    coding,
+    testing,
+    securityModel,
+    evaluator,
   );
   const aggregate = aggregateResults(metricAgents);
 
@@ -118,19 +161,23 @@ function normalizeRunInput(input: RunInput): NormalizedRunInput {
 }
 
 function createAgentOutputs(
-  input: NormalizedRunInput,
   contextDoctor: ContextDoctorAgentOutput,
   planner: PlannerAgentOutput,
-  security: AgentRunResponse["security"],
+  research: ResearchAgentOutput,
+  coding: CodingAgentOutput,
+  testing: TestingAgentOutput,
+  security: SecurityAgentOutput,
+  evaluator: EvaluatorAgentOutput,
+  contextDoctorRefForSecurity: ContextDoctorAgentOutput,
 ): AgentRunOutput[] {
   return [
     toContextDoctorOutput(contextDoctor),
     toPlannerOutput(planner),
-    toResearchOutput(input),
-    toCodingOutput(),
-    toTestingOutput(),
-    toSecurityOutput(security, contextDoctor),
-    toEvaluatorOutput(planner),
+    toResearchOutput(research),
+    toCodingOutput(coding),
+    toTestingOutput(testing),
+    toSecurityOutput(security, contextDoctorRefForSecurity),
+    toEvaluatorOutput(evaluator),
   ];
 }
 
@@ -171,43 +218,39 @@ function toPlannerOutput(output: PlannerAgentOutput): PlannerOutput {
   };
 }
 
-function toResearchOutput(input: NormalizedRunInput): ResearchOutput {
+function toResearchOutput(output: ResearchAgentOutput): ResearchOutput {
   return {
     agentName: "Research",
     status: "complete",
-    xai: cloneXai(RESEARCH_MOCK.xai),
+    xai: output.xai,
     result: {
-      findings: [
-        RESEARCH_MOCK.hypothesis,
-        ...RESEARCH_MOCK.evidence,
-        `Inspected request for ${input.githubUrl}`,
-      ],
-      sources: [...RESEARCH_MOCK.relevant_files],
-      openQuestions: [...RESEARCH_MOCK.result.unknowns],
+      findings: output.rootCauseHypotheses.map(h => h.hypothesis),
+      sources: [...output.mostRelevantFiles],
+      openQuestions: [...output.unknowns],
     },
   };
 }
 
-function toCodingOutput(): CodingOutput {
+function toCodingOutput(output: CodingAgentOutput): CodingOutput {
   return {
     agentName: "Coding",
     status: "complete",
-    xai: cloneXai(CODING_MOCK.xai),
+    xai: output.xai,
     result: {
-      filesChanged: CODING_MOCK.result.files_to_modify.map((file) => file.path),
-      implementationSummary: CODING_MOCK.result.implementation_notes.join(" "),
-      riskNotes: [CODING_MOCK.result.rollback_plan],
+      filesChanged: output.filesToModify.map((file) => file.path),
+      implementationSummary: output.implementationNotes.join(" "),
+      riskNotes: [output.rollbackPlan],
     },
   };
 }
 
-function toTestingOutput(): TestingOutput {
+function toTestingOutput(output: TestingAgentOutput): TestingOutput {
   return {
     agentName: "Testing",
     status: "complete",
-    xai: cloneXai(TESTING_MOCK.xai),
+    xai: output.xai,
     result: {
-      checksRun: TESTING_MOCK.result.test_cases.map((test) => test.name),
+      checksRun: output.testCases.map((test) => test.name),
       passed: true,
       failures: [],
     },
@@ -215,44 +258,42 @@ function toTestingOutput(): TestingOutput {
 }
 
 function toSecurityOutput(
-  security: AgentRunResponse["security"],
+  output: SecurityAgentOutput,
   contextDoctor: ContextDoctorAgentOutput,
 ): SecurityOutput {
-  const xai = cloneXai(SECURITY_MOCK.xai);
-
   return {
     agentName: "Security",
     status: "complete",
     xai: {
-      ...xai,
+      ...output.xai,
       evidence: [
-        ...xai.evidence,
+        ...output.xai.evidence,
         `Context Doctor severity: ${contextDoctor.severity}`,
-        `Security findings generated: ${security.findings.length}`,
+        `Security findings generated: ${output.findings.length}`,
       ],
-      confidence: calculateSecurityConfidence(security.riskScore),
+      confidence: output.xai.confidence,
     },
     result: {
-      riskLevel: scoreToRiskLevel(security.riskScore),
-      findings: security.findings.map((finding) => finding.title),
-      mitigations: security.findings.map((finding) => finding.detail),
+      riskLevel: scoreToRiskLevel(output.riskScore),
+      findings: output.findings.map((finding) => finding.title),
+      mitigations: output.findings.map((finding) => finding.mitigation),
     },
   };
 }
 
-function toEvaluatorOutput(planner: PlannerAgentOutput): EvaluatorOutput {
+function toEvaluatorOutput(output: EvaluatorAgentOutput): EvaluatorOutput {
   return {
     agentName: "Evaluator",
     status: "complete",
-    xai: cloneXai(EVALUATOR_MOCK.xai),
+    xai: output.xai,
     result: {
-      score: Math.round(EVALUATOR_MOCK.result.accuracy * 100),
+      score: Math.round(output.accuracy * 100),
       rubric: {
-        accuracy: EVALUATOR_MOCK.result.accuracy,
-        reliability: EVALUATOR_MOCK.result.reliability,
-        confidence: planner.xai.confidence,
+        accuracy: output.accuracy,
+        reliability: output.reliability,
+        confidence: output.confidence,
       },
-      recommendation: EVALUATOR_MOCK.result.checks
+      recommendation: output.checks
         .map((check) => `${check.name}: ${check.status}`)
         .join("; "),
     },
@@ -264,7 +305,11 @@ function createMetricAgentOutputs(
   totalLatencyMs: number,
   contextDoctor: ContextDoctorAgentOutput,
   planner: PlannerAgentOutput,
-  security: AgentRunResponse["security"],
+  research: ResearchAgentOutput,
+  coding: CodingAgentOutput,
+  testing: TestingAgentOutput,
+  securityModel: SecurityAgentOutput,
+  evaluator: EvaluatorAgentOutput,
 ): MetricAgentOutput[] {
   const perAgentLatency = Math.max(
     MOCK_AGENT_LATENCY_MS,
@@ -272,6 +317,44 @@ function createMetricAgentOutputs(
   );
 
   return agents.map((agent) => {
+    let accuracy = 0.8;
+    let reliability = 0.8;
+    let risk_score = 0;
+    let findings: SecurityAgentOutput["findings"] = [];
+
+    switch (agent.agentName) {
+      case "Context Doctor":
+        accuracy = contextDoctor.confidence;
+        reliability = contextDoctor.severity === "high" ? 0.78 : 0.88;
+        break;
+      case "Planner":
+        accuracy = planner.xai.confidence;
+        reliability = 0.88;
+        break;
+      case "Research":
+        accuracy = research.xai.confidence;
+        reliability = 0.90;
+        break;
+      case "Coding":
+        accuracy = coding.xai.confidence;
+        reliability = 0.88;
+        break;
+      case "Testing":
+        accuracy = testing.xai.confidence;
+        reliability = 0.92;
+        break;
+      case "Security":
+        accuracy = securityModel.xai.confidence;
+        reliability = 0.89;
+        risk_score = securityModel.riskScore / 10;
+        findings = securityModel.findings;
+        break;
+      case "Evaluator":
+        accuracy = evaluator.accuracy;
+        reliability = evaluator.reliability;
+        break;
+    }
+
     const base = {
       name: agent.agentName,
       xai: agent.xai,
@@ -280,8 +363,8 @@ function createMetricAgentOutputs(
         latency: isLiveAgent(agent.agentName)
           ? perAgentLatency
           : MOCK_AGENT_LATENCY_MS,
-        accuracy: getAccuracy(agent.agentName),
-        reliability: getReliability(agent.agentName),
+        accuracy,
+        reliability,
       },
     };
 
@@ -290,30 +373,8 @@ function createMetricAgentOutputs(
         ...base,
         result: {
           ...base.result,
-          risk_score: security.riskScore / 10,
-          findings: security.findings,
-        },
-      };
-    }
-
-    if (agent.agentName === "Context Doctor") {
-      return {
-        ...base,
-        result: {
-          ...base.result,
-          accuracy: contextDoctor.confidence,
-          reliability: contextDoctor.severity === "high" ? 0.78 : 0.88,
-        },
-      };
-    }
-
-    if (agent.agentName === "Planner") {
-      return {
-        ...base,
-        result: {
-          ...base.result,
-          accuracy: planner.xai.confidence,
-          reliability: 0.88,
+          risk_score,
+          findings,
         },
       };
     }
@@ -322,21 +383,9 @@ function createMetricAgentOutputs(
   });
 }
 
-function createSecurityMetrics(
-  input: NormalizedRunInput,
-  contextDoctor: ContextDoctorAgentOutput,
-): AgentRunResponse["security"] {
-  const findings = createSecurityFindings(input, contextDoctor);
-
-  return {
-    riskScore: calculateRiskScore(findings, contextDoctor.severity),
-    vulnerabilitiesFound: findings.length,
-    findings,
-  };
-}
-
-function isLiveAgent(agentName: AgentName): boolean {
-  return agentName === "Context Doctor" || agentName === "Planner";
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function isLiveAgent(_agentName: AgentName): boolean {
+  return true;
 }
 
 function isBillableLiveAgent(agent: AgentRunOutput): boolean {
@@ -345,185 +394,25 @@ function isBillableLiveAgent(agent: AgentRunOutput): boolean {
 
 function isFallbackOutput(agent: AgentRunOutput): boolean {
   const fallbackText = `${agent.xai.decision} ${agent.xai.reason}`;
-
   return /fallback|OPENAI_API_KEY is required/iu.test(fallbackText);
-}
-
-function createSecurityFindings(
-  input: NormalizedRunInput,
-  contextDoctor: ContextDoctorAgentOutput,
-): RunSecurityFinding[] {
-  const findings: RunSecurityFinding[] = [];
-  const missingText = contextDoctor.missing_items.join(" ").toLowerCase();
-  const description = input.description.toLowerCase();
-
-  if (/\b(api[_\s-]?key|token|password|secret|credential)\b/iu.test(description)) {
-    findings.push({
-      id: "sec-001",
-      title: "Sensitive credential-like text in problem description",
-      severity: "critical",
-      source: "Security agent",
-      detail:
-        "Remove secrets from user-visible prompts and keep credentials only in server-side environment variables.",
-    });
-  }
-
-  if (missingText.includes("api specification") || missingText.includes("contract")) {
-    findings.push({
-      id: `sec-${String(findings.length + 1).padStart(3, "0")}`,
-      title: "Missing API contract increases validation risk",
-      severity: "medium",
-      source: "Security agent",
-      detail:
-        "Add an API contract or OpenAPI document before exposing generated endpoint findings to admins.",
-    });
-  }
-
-  if (missingText.includes("environment variable")) {
-    findings.push({
-      id: `sec-${String(findings.length + 1).padStart(3, "0")}`,
-      title: "Runtime environment drift can break live agents",
-      severity: "high",
-      source: "Security agent",
-      detail:
-        "Create a redacted .env.example and verify production secrets are configured outside the client bundle.",
-    });
-  }
-
-  if (input.screenshot) {
-    findings.push({
-      id: `sec-${String(findings.length + 1).padStart(3, "0")}`,
-      title: "Screenshot context may expose private project data",
-      severity: "low",
-      source: "Security agent",
-      detail:
-        "Review uploaded screenshots for tokens, emails, internal URLs, and customer data before demo sharing.",
-    });
-  }
-
-  if (/\b(auth|login|admin|role|permission|tenant|session)\b/iu.test(description)) {
-    findings.push({
-      id: `sec-${String(findings.length + 1).padStart(3, "0")}`,
-      title: "Authorization-sensitive workflow needs access review",
-      severity: "high",
-      source: "Security agent",
-      detail:
-        "Validate role checks, session handling, and least-privilege behavior for the requested workflow.",
-    });
-  }
-
-  const seededFindings: RunSecurityFinding[] = SECURITY_MOCK.result.findings.map(
-    (finding, index) => ({
-      id: `sec-${String(findings.length + index + 1).padStart(3, "0")}`,
-      title: finding.title,
-      severity: finding.severity,
-      source: "Security agent",
-      detail: finding.mitigation,
-    }),
-  );
-
-  return [...findings, ...seededFindings].slice(0, 3).map((finding, index) => ({
-    ...finding,
-    id: `sec-${String(index + 1).padStart(3, "0")}`,
-  }));
-}
-
-function calculateRiskScore(
-  findings: RunSecurityFinding[],
-  contextSeverity: ContextDoctorAgentOutput["severity"],
-): number {
-  const contextAdjustment: Record<ContextDoctorAgentOutput["severity"], number> = {
-    low: 0,
-    medium: 6,
-    high: 12,
-  };
-  const averageSeverity =
-    findings.length === 0
-      ? 0
-      : findings.reduce(
-          (total, finding) => total + severityToRiskScore(finding.severity),
-          0,
-        ) / findings.length;
-
-  return Math.min(
-    100,
-    Math.round(averageSeverity * 10 + contextAdjustment[contextSeverity]),
-  );
-}
-
-function severityToRiskScore(severity: RunSecurityFinding["severity"]): number {
-  const scores: Record<RunSecurityFinding["severity"], number> = {
-    low: 2,
-    medium: 5,
-    high: 7.5,
-    critical: 9.5,
-  };
-
-  return scores[severity];
 }
 
 function scoreToRiskLevel(
   riskScore: number,
 ): SecurityOutput["result"]["riskLevel"] {
-  if (riskScore >= 90) {
+  if (riskScore >= 9) {
     return "critical";
   }
 
-  if (riskScore >= 70) {
+  if (riskScore >= 7) {
     return "high";
   }
 
-  if (riskScore >= 40) {
+  if (riskScore >= 4) {
     return "medium";
   }
 
   return "low";
-}
-
-function calculateSecurityConfidence(riskScore: number): number {
-  return Number(Math.min(0.94, Math.max(0.64, 0.74 + riskScore / 500)).toFixed(2));
-}
-
-function getAccuracy(agentName: AgentName): number {
-  const scores: Record<AgentName, number> = {
-    "Context Doctor": 0.82,
-    Planner: 0.84,
-    Research: 0.8,
-    Coding: 0.78,
-    Testing: 0.83,
-    Security: 0.81,
-    Evaluator: EVALUATOR_MOCK.result.accuracy,
-  };
-
-  return scores[agentName];
-}
-
-function getReliability(agentName: AgentName): number {
-  const scores: Record<AgentName, number> = {
-    "Context Doctor": 0.86,
-    Planner: 0.88,
-    Research: 0.9,
-    Coding: 0.88,
-    Testing: 0.92,
-    Security: 0.89,
-    Evaluator: EVALUATOR_MOCK.result.reliability,
-  };
-
-  return scores[agentName];
-}
-
-function cloneXai(xai: {
-  decision: string;
-  reason: string;
-  evidence: readonly string[];
-  confidence: number;
-}): XAIAnswer {
-  return {
-    decision: xai.decision,
-    reason: xai.reason,
-    evidence: [...xai.evidence],
-    confidence: xai.confidence,
-  };
 }
 
 export { runInputSchema };

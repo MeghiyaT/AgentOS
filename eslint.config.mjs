@@ -21,6 +21,7 @@ const eslintConfig = [
       "dist/**",
       "coverage/**",
       "next-env.d.ts",
+      "scratch/**",
     ],
   },
 ];

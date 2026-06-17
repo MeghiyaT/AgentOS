@@ -11,7 +11,7 @@ export const evaluationMetricsSchema = z.object({
 export const securityFindingSchema = z.object({
   id: z.string(),
   title: z.string(),
-  severity: z.enum(["low", "medium", "high", "critical"]),
+  severity: z.enum(["info", "low", "medium", "high", "critical"]),
   source: z.string(),
   detail: z.string(),
 });

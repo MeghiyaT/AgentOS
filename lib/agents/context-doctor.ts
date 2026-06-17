@@ -10,8 +10,7 @@ export const contextDoctorInputSchema = z
     githubUrl: z.string().url(),
     description: z.string().min(1),
     screenshot: z.string().min(1).nullable(),
-  })
-  .strict();
+  });
 
 export const contextDoctorAgentOutputSchema = z
   .object({
@@ -20,13 +19,10 @@ export const contextDoctorAgentOutputSchema = z
     severity: z.enum(["low", "medium", "high"]),
     confidence: z.number().min(0).max(1),
     xai: xaiSchema,
-  })
-  .strict();
+  });
 
 export type ContextDoctorInput = z.infer<typeof contextDoctorInputSchema>;
-export type ContextDoctorAgentOutput = z.infer<
-  typeof contextDoctorAgentOutputSchema
->;
+export type ContextDoctorAgentOutput = z.infer<typeof contextDoctorAgentOutputSchema>;
 
 type GitHubRepositoryMetadata = {
   source: "github_api" | "mock";
@@ -71,31 +67,95 @@ const CONTEXT_DOCTOR_SYSTEM_PROMPT = [
   "Return only JSON that matches the provided schema.",
   "Keep missing_items short, concrete, and directly actionable.",
   "Set severity to low, medium, or high based on how much the missing context blocks accurate execution.",
-  "Set confidence from 0 to 1 and mirror the same calibrated confidence inside xai.confidence.",
+  "Always populate the XAI decision, reason, evidence, and confidence (0-100) fields.",
 ].join(" ");
+
+const aiContextDoctorSchema = z.object({
+  diagnosis: z.string().min(1),
+  missing_items: z.array(z.string().min(1)),
+  severity: z.enum(["low", "medium", "high"]),
+  xai: z.object({
+    decision: z.string().min(1),
+    reason: z.string().min(1),
+    evidence: z.array(z.string().min(1)).min(1),
+    confidence: z.number().min(0).max(100),
+  }),
+});
 
 export async function runContextDoctor(
   rawInput: ContextDoctorInput,
   options: ContextDoctorOptions = {},
 ): Promise<ContextDoctorAgentOutput> {
+  const startTime = Date.now();
   const input = contextDoctorInputSchema.parse(rawInput);
   const fetchImpl = options.fetchImpl ?? fetch;
   const metadata = await fetchRepositoryMetadata(input.githubUrl, fetchImpl);
 
-  try {
-    const client = createOpenAIClient(options.openai);
-    const output = await requestContextDoctorDiagnosis(client, input, metadata, {
-      model: options.model ?? DEFAULT_MODEL,
-    });
+  let attempts = 0;
+  const MAX_RETRIES = 2;
+  const TIMEOUT_MS = 30000;
 
-    return contextDoctorAgentOutputSchema.parse(output);
-  } catch (error) {
-    if (options.allowMockFallback === false) {
-      throw error;
+  while (attempts <= MAX_RETRIES) {
+    attempts++;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    try {
+      const client = createOpenAIClient(options.openai);
+      const completion = await client.chat.completions.create(
+        {
+          model: options.model ?? DEFAULT_MODEL,
+          messages: buildMessages(input, metadata),
+          response_format: zodResponseFormat(
+            aiContextDoctorSchema,
+            "context_doctor_diagnosis",
+          ),
+          temperature: 0.2,
+        },
+        { signal: controller.signal },
+      );
+
+      clearTimeout(timeoutId);
+
+      const content = completion.choices[0]?.message.content;
+      if (!content) {
+        throw new Error("OpenAI response did not include message content.");
+      }
+
+      const parsed = aiContextDoctorSchema.parse(JSON.parse(content));
+      const latencyMs = Date.now() - startTime;
+      const tokens = completion.usage?.total_tokens ?? 0;
+
+      return contextDoctorAgentOutputSchema.parse({
+        diagnosis: parsed.diagnosis,
+        missing_items: parsed.missing_items,
+        severity: parsed.severity,
+        confidence: parsed.xai.confidence / 100,
+        xai: {
+          decision: parsed.xai.decision,
+          reason: parsed.xai.reason,
+          evidence: [
+            ...parsed.xai.evidence,
+            `[Telemetry] Latency: ${latencyMs}ms`,
+            `[Telemetry] Tokens: ${tokens}`,
+          ],
+          confidence: parsed.xai.confidence / 100,
+        },
+      });
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (attempts > MAX_RETRIES) {
+        if (options.allowMockFallback !== false) {
+          return buildGracefulFallback(input, metadata, getErrorMessage(error), Date.now() - startTime);
+        }
+        throw error;
+      }
+      // Exponential backoff
+      await new Promise((resolve) => setTimeout(resolve, 1000 * attempts));
     }
-
-    return buildMockContextDoctorOutput(input, metadata, getErrorMessage(error));
   }
+
+  return buildGracefulFallback(input, metadata, "Max retries exceeded", Date.now() - startTime);
 }
 
 export async function fetchRepositoryMetadata(
@@ -158,32 +218,6 @@ export async function fetchRepositoryMetadata(
   }
 }
 
-async function requestContextDoctorDiagnosis(
-  client: OpenAI,
-  input: ContextDoctorInput,
-  metadata: GitHubRepositoryMetadata,
-  options: { model: string },
-): Promise<ContextDoctorAgentOutput> {
-  const completion = await client.chat.completions.create({
-    model: options.model,
-    messages: buildMessages(input, metadata),
-    response_format: zodResponseFormat(
-      contextDoctorAgentOutputSchema,
-      "context_doctor_diagnosis",
-    ),
-    temperature: 0.2,
-  });
-
-  const content = completion.choices[0]?.message.content;
-
-  if (!content) {
-    throw new Error("OpenAI response did not include message content.");
-  }
-
-  const parsed: unknown = JSON.parse(content);
-  return contextDoctorAgentOutputSchema.parse(parsed);
-}
-
 function buildMessages(
   input: ContextDoctorInput,
   metadata: GitHubRepositoryMetadata,
@@ -241,129 +275,31 @@ function createOpenAIClient(client?: OpenAI): OpenAI {
   return new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 }
 
-function buildMockContextDoctorOutput(
+function buildGracefulFallback(
   input: ContextDoctorInput,
   metadata: GitHubRepositoryMetadata,
   fallbackReason: string,
+  latencyMs: number,
 ): ContextDoctorAgentOutput {
-  const rootPaths = new Set(
-    metadata.rootFiles.map((file) => file.path.toLowerCase()),
-  );
-  const missingItems = inferMissingItems(rootPaths, metadata);
-  const severity = determineSeverity(missingItems, metadata);
-  const confidence = calculateFallbackConfidence(input, metadata, missingItems);
-
   return contextDoctorAgentOutputSchema.parse({
-    diagnosis:
-      missingItems.length > 0
-        ? `Context Doctor found ${missingItems.length} missing context item(s) for ${input.githubUrl}.`
-        : `Context Doctor did not find obvious missing top-level context for ${input.githubUrl}.`,
-    missing_items: missingItems,
-    severity,
-    confidence,
+    diagnosis: `Context Doctor diagnosis degraded. Proceeding with caution.`,
+    missing_items: [
+      "AI diagnosis system was unreachable or timed out.",
+      "Unable to verify environment setup or architecture docs dynamically."
+    ],
+    severity: "high",
+    confidence: 0.1,
     xai: {
-      decision: "Used deterministic mock fallback for Context Doctor diagnosis.",
-      reason: fallbackReason,
+      decision: "Triggered graceful degraded fallback.",
+      reason: `Context Doctor failed after retries: ${fallbackReason}`,
       evidence: [
         `Repository metadata source: ${metadata.source}`,
         `Root files inspected: ${metadata.rootFiles.length}`,
-        `Description length: ${input.description.length}`,
+        `[Telemetry] Failed after ${latencyMs}ms`,
       ],
-      confidence,
+      confidence: 0.1,
     },
   });
-}
-
-function inferMissingItems(
-  rootPaths: Set<string>,
-  metadata: GitHubRepositoryMetadata,
-): string[] {
-  const missingItems: string[] = [];
-
-  if (!hasAny(rootPaths, ["readme.md", "readme", "docs/readme.md"])) {
-    missingItems.push("README with project purpose and setup instructions");
-  }
-
-  if (!hasPathMatching(rootPaths, ["openapi", "swagger", "api.md", "api.yaml"])) {
-    missingItems.push("API specification or contract documentation");
-  }
-
-  if (!hasPathMatching(rootPaths, ["architecture", "system-design", "diagram"])) {
-    missingItems.push("Architecture diagram or system overview");
-  }
-
-  if (!hasAny(rootPaths, [".env.example", "env.example", "example.env"])) {
-    missingItems.push("Environment variable example file");
-  }
-
-  if (!hasPathMatching(rootPaths, ["test", "spec", "__tests__"])) {
-    missingItems.push("Visible test plan or automated test directory");
-  }
-
-  if (metadata.source === "mock") {
-    missingItems.push("Verified GitHub repository metadata");
-  }
-
-  return missingItems;
-}
-
-function determineSeverity(
-  missingItems: string[],
-  metadata: GitHubRepositoryMetadata,
-): ContextDoctorAgentOutput["severity"] {
-  if (metadata.source === "mock" || missingItems.length >= 4) {
-    return "high";
-  }
-
-  if (missingItems.length >= 2) {
-    return "medium";
-  }
-
-  return "low";
-}
-
-function calculateFallbackConfidence(
-  input: ContextDoctorInput,
-  metadata: GitHubRepositoryMetadata,
-  missingItems: string[],
-): number {
-  const base = metadata.source === "github_api" ? 0.6 : 0.44;
-  const descriptionBonus = Math.min(0.09, input.description.trim().length / 1_500);
-  const screenshotBonus = input.screenshot ? 0.03 : 0;
-  const rootFileBonus = Math.min(0.08, metadata.rootFiles.length / 120);
-  const missingPenalty = Math.min(0.16, missingItems.length * 0.035);
-  const requestNudge =
-    (stableHash(`${input.githubUrl}|${input.description}|${missingItems.join("|")}`) %
-      7) /
-    100;
-
-  return clampConfidence(
-    base + descriptionBonus + screenshotBonus + rootFileBonus + requestNudge - missingPenalty,
-  );
-}
-
-function stableHash(value: string): number {
-  let hash = 0;
-
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-
-  return hash;
-}
-
-function clampConfidence(value: number): number {
-  return Number(Math.min(0.82, Math.max(0.42, value)).toFixed(2));
-}
-
-function hasAny(paths: Set<string>, candidates: string[]): boolean {
-  return candidates.some((candidate) => paths.has(candidate));
-}
-
-function hasPathMatching(paths: Set<string>, fragments: string[]): boolean {
-  return Array.from(paths).some((path) =>
-    fragments.some((fragment) => path.includes(fragment)),
-  );
 }
 
 async function fetchRootFiles(
@@ -478,7 +414,11 @@ function isRemoteImageReference(value: string): boolean {
 }
 
 function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown error";
+  if (error instanceof Error) {
+    if (error.name === "AbortError") return "API request timed out";
+    return error.message;
+  }
+  return "Unknown error";
 }
 
 const repositoryApiResponseSchema = z

@@ -97,7 +97,7 @@ export interface RunEvaluationMetrics {
 export interface RunSecurityFinding {
   id: string;
   title: string;
-  severity: "low" | "medium" | "high" | "critical";
+  severity: "info" | "low" | "medium" | "high" | "critical";
   source: string;
   detail: string;
 }
