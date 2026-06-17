@@ -1,53 +1,58 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import {
-  createMethodNotAllowedResponse,
-  createRunErrorResponse,
-  runAgentOrchestrator,
-} from "../../../lib/agents/agent-runner";
-import {
-  RunRequestSchema,
-  RunResponseSchema,
-} from "../../../lib/schemas/api-schemas";
+import { runAgentOSInspection } from "@/lib/agents/orchestrator";
+
+export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const startTime = Date.now();
-
   try {
     const body: unknown = await request.json();
-    const validated = RunRequestSchema.parse(body);
-    const response = await runAgentOrchestrator(validated);
-    const totalLatencyMs = Date.now() - startTime;
+    const response = await runAgentOSInspection(body);
 
-    return NextResponse.json(
-      RunResponseSchema.parse({
-        ...response,
-        evaluation: {
-          ...response.evaluation,
-          latencyMs: totalLatencyMs,
-        },
-        total_latency_ms: totalLatencyMs,
-      }),
-    );
+    return NextResponse.json(response);
   } catch (error) {
     const status = error instanceof z.ZodError ? 400 : 500;
-    const response = createRunErrorResponse(error, Date.now() - startTime);
+    const message =
+      error instanceof Error ? error.message : "AgentOS run failed.";
 
-    return NextResponse.json(response, { status });
+    return NextResponse.json(
+      {
+        agents: [],
+        evaluation: {
+          totalCostUsd: 0,
+          totalLatencySeconds: 0,
+          accuracy: 0,
+          reliability: 0,
+          confidence: 0,
+        },
+        security: {
+          riskScore: 100,
+          vulnerabilitiesFound: 1,
+          findings: [
+            {
+              id: "run-001",
+              title: "Run failed",
+              severity: "high",
+              source: "AgentOS API",
+              detail: message,
+            },
+          ],
+        },
+        status: "error",
+        generatedAt: new Date().toISOString(),
+        totalCostUsd: 0,
+        totalLatencyMs: 0,
+        error: message,
+      },
+      { status },
+    );
   }
 }
 
-export async function GET() {
-  const response = createMethodNotAllowedResponse("GET", 0);
-
+export function GET() {
   return NextResponse.json(
-    response,
-    {
-      status: 405,
-      headers: {
-        Allow: "POST",
-      },
-    },
+    { error: "Use POST /api/run to start AgentOS inspection." },
+    { status: 405, headers: { Allow: "POST" } },
   );
 }
